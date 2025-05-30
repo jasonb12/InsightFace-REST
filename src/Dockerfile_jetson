@@ -1,0 +1,66 @@
+# Dockerfile for InsightFace-REST on Jetson AGX with JetPack 6.2
+# Based on L4T JetPack r36.4.0 which is compatible with JetPack 6.2 (r36.4.3)
+
+FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+
+# Environment setup
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_INSTALL="python3 -m pip --no-cache-dir install --upgrade"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    python3-opencv \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgstreamer1.0-0 \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    protobuf-compiler \
+    libprotoc-dev \
+    libb64-0d \
+    libturbojpeg \
+    libturbojpeg0-dev \
+    ffmpeg \
+    curl \
+    wget \
+    git \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies optimized for ARM64/Jetson
+COPY requirements_jetson.txt .
+RUN $PIP_INSTALL -r requirements_jetson.txt
+
+# Set up CUDA environment variables
+ENV CUDA_HOME="/usr/local/cuda"
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+
+# Jetson-specific optimizations
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+ENV FORCE_CUDA=1
+
+# Copy application code
+WORKDIR /app
+COPY api_trt /app/api_trt
+COPY entrypoint_jetson.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:18080/info || exit 1
+
+ENTRYPOINT ["bash"]
+CMD ["entrypoint.sh"] 

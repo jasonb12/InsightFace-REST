@@ -25,6 +25,14 @@ except Exception as e:
     trt_backend = None
     triton_backend = None
     convert_onnx = None
+    
+    # Fallback function when TensorRT is not available
+    def check_fp16():
+        """
+        Fallback function when TensorRT is not available.
+        Returns False to disable FP16 optimization.
+        """
+        return False
 
 # Map function names to corresponding functions
 func_map = {
