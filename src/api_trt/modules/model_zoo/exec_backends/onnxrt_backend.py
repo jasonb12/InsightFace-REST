@@ -4,13 +4,30 @@ import numpy as np
 import logging
 from api_trt.logger import logger
 
+# Configure GPU execution providers for Jetson
+def get_execution_providers():
+    """Get the best available execution providers for this platform"""
+    available_providers = onnxruntime.get_available_providers()
+    providers = []
+    
+    # Prefer TensorRT for Jetson, then CUDA, then CPU
+    if 'TensorrtExecutionProvider' in available_providers:
+        providers.append('TensorrtExecutionProvider')
+    if 'CUDAExecutionProvider' in available_providers:
+        providers.append('CUDAExecutionProvider')
+    providers.append('CPUExecutionProvider')
+    
+    logger.info(f"Using ONNX Runtime execution providers: {providers}")
+    return providers
+
 class Arcface:
     def __init__(self, rec_name='/models/onnx/arcface_r100_v1/arcface_r100_v1.onnx',
                  input_mean: float = 0.,
                  input_std: float = 1.,
                  swapRB=True,
                  **kwargs):
-        self.rec_model = onnxruntime.InferenceSession(rec_name)
+        providers = get_execution_providers()
+        self.rec_model = onnxruntime.InferenceSession(rec_name, providers=providers)
         self.input_mean = input_mean
         self.input_std = input_std
         self.swapRB = swapRB
@@ -38,7 +55,8 @@ class Arcface:
 class FaceGenderage:
 
     def __init__(self, rec_name='/models/onnx/genderage_v1/genderage_v1.onnx', outputs=None, **kwargs):
-        self.rec_model = onnxruntime.InferenceSession(rec_name)
+        providers = get_execution_providers()
+        self.rec_model = onnxruntime.InferenceSession(rec_name, providers=providers)
         self.input = self.rec_model.get_inputs()[0]
         if outputs is None:
             outputs = [e.name for e in self.rec_model.get_outputs()]
@@ -79,7 +97,8 @@ class FaceGenderage:
 class MaskDetection:
 
     def __init__(self, rec_name='/models/onnx/genderage_v1/genderage_v1.onnx', outputs=None, **kwargs):
-        self.rec_model = onnxruntime.InferenceSession(rec_name)
+        providers = get_execution_providers()
+        self.rec_model = onnxruntime.InferenceSession(rec_name, providers=providers)
         self.input = self.rec_model.get_inputs()[0]
         if outputs is None:
             outputs = [e.name for e in self.rec_model.get_outputs()]
@@ -116,7 +135,8 @@ class DetectorInfer:
     def __init__(self, model='/models/onnx/centerface/centerface.onnx',
                  output_order=None, **kwargs):
 
-        self.rec_model = onnxruntime.InferenceSession(model)
+        providers = get_execution_providers()
+        self.rec_model = onnxruntime.InferenceSession(model, providers=providers)
         logger.info('Detector started')
         self.input = self.rec_model.get_inputs()[0]
         self.input_dtype = self.input.type

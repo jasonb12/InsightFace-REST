@@ -30,12 +30,13 @@ numba>=0.58.0
 # opencv-python  # Use system opencv from apt
 scikit-image>=0.21.0
 
-# ONNX and runtime (ARM64 compatible versions)
+# ONNX and runtime (ARM64 compatible versions with GPU support)
 onnx>=1.15.0
-# Use regular ONNX Runtime for Jetson (TensorRT EP will be configured via providers)
-# onnxruntime-gpu is not available for ARM64, use regular onnxruntime
-onnxruntime>=1.16.0
-# onnx-simplifier>=0.4.33  # Removed due to build complexity, not critical for core functionality
+# Install ONNX Runtime with GPU support for Jetson
+# Remove regular onnxruntime first if it was installed
+# Use NVIDIA's pre-built wheel for Jetson with CUDA/TensorRT support
+# This requires --extra-index-url https://developer.download.nvidia.com/compute/redist
+# or manual installation of NVIDIA's ONNX Runtime build for Jetson
 
 # Image processing and utilities
 Pillow>=10.0.0
