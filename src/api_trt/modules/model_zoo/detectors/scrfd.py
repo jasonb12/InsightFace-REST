@@ -40,17 +40,31 @@ def timing(f):
 @njit(fastmath=True, cache=True)
 def single_distance2bbox(point, distance, stride):
     """
-    Fast conversion of single bbox distances to coordinates
+    Fast conversion of single bbox distances to coordinates using SCRFD distance-based encoding.
+    SCRFD uses distance-based encoding where outputs represent distances from anchor center 
+    to box edges (left, top, right, bottom), not delta coordinates.
 
-    :param point: Anchor point
-    :param distance: Bbox distances from anchor point
+    :param point: Anchor point [x, y]
+    :param distance: Bbox distances from anchor point [left, top, right, bottom]
     :param stride: Current stride scale
-    :return: bbox
+    :return: bbox [x1, y1, x2, y2]
     """
-    distance[0] = point[0] - distance[0] * stride
-    distance[1] = point[1] - distance[1] * stride
-    distance[2] = point[0] + distance[2] * stride
-    distance[3] = point[1] + distance[3] * stride
+    # Ensure we're working with copies to avoid modifying input arrays
+    left, top, right, bottom = distance[0], distance[1], distance[2], distance[3]
+    center_x, center_y = point[0], point[1]
+    
+    # SCRFD distance-based encoding: distances from center to edges
+    x1 = center_x - left * stride    # Distance from center to left edge
+    y1 = center_y - top * stride     # Distance from center to top edge  
+    x2 = center_x + right * stride   # Distance from center to right edge
+    y2 = center_y + bottom * stride  # Distance from center to bottom edge
+    
+    # Update the distance array in-place for compatibility
+    distance[0] = x1
+    distance[1] = y1
+    distance[2] = x2
+    distance[3] = y2
+    
     return distance
 
 
@@ -64,9 +78,13 @@ def single_distance2kps(point, distance, stride):
     :param stride: Current stride scale
     :return: keypoint
     """
+    center_x, center_y = float(point[0]), float(point[1])
+    stride_f = float(stride)
+    
     for ix in range(0, distance.shape[0], 2):
-        distance[ix] = distance[ix] * stride + point[0]
-        distance[ix + 1] = distance[ix + 1] * stride + point[1]
+        # Convert keypoint distances to absolute coordinates
+        distance[ix] = distance[ix] * stride_f + center_x
+        distance[ix + 1] = distance[ix + 1] * stride_f + center_y
     return distance
 
 
@@ -92,12 +110,15 @@ def generate_proposals(score_blob, bbox_blob, kpss_blob, stride, anchors, thresh
     """
 
     total = offset
+    threshold_f = float(threshold)
 
     for ix in range(0, anchors.shape[0]):
-        if score_blob[ix, 0] > threshold:
+        # Ensure score comparison uses scalar values to avoid numpy array boolean issues
+        score_val = float(score_blob[ix, 0])
+        if score_val > threshold_f:
             score_out[total] = score_blob[ix]
-            bbox_out[total] = single_distance2bbox(anchors[ix], bbox_blob[ix], stride)
-            kpss_out[total] = single_distance2kps(anchors[ix], kpss_blob[ix], stride)
+            bbox_out[total] = single_distance2bbox(anchors[ix], bbox_blob[ix].copy(), stride)
+            kpss_out[total] = single_distance2kps(anchors[ix], kpss_blob[ix].copy(), stride)
             total += 1
 
     return score_out, bbox_out, kpss_out, total
@@ -113,8 +134,15 @@ def filter(bboxes_list: np.ndarray, kpss_list: np.ndarray,
     :param bboxes_list: List of bboxes (np.ndarray)
     :param kpss_list: List of keypoints (np.ndarray)
     :param scores_list: List of scores (np.ndarray)
-    :return: Face bboxes with scores [t,l,b,r,score], and key points
+    :param nms_threshold: NMS threshold
+    :return: Face bboxes with scores [x1,y1,x2,y2,score], and key points
     """
+
+    if bboxes_list.shape[0] == 0:
+        # Return empty arrays with correct shapes
+        empty_det = np.zeros((0, 5), dtype=np.float32)
+        empty_kpss = np.zeros((0, 5, 2), dtype=np.float32)
+        return empty_det, empty_kpss
 
     pre_det = np.hstack((bboxes_list, scores_list))
     keep = nms(pre_det, thresh=nms_threshold)
@@ -195,21 +223,33 @@ class SCRFD:
         """
         Run detection pipeline for provided image
 
-        :param img: Raw image as nd.ndarray with HWC shape
+        :param imgs: Raw image(s) as nd.ndarray with HWC shape or list/tuple of images
         :param threshold: Confidence threshold
-        :return: Face bboxes with scores [t,l,b,r,score], and key points
+        :return: Face bboxes with scores [x1,y1,x2,y2,score], and key points
         """
 
-        if isinstance(imgs, list) or isinstance(imgs, tuple):
+        # Robust input handling
+        if isinstance(imgs, (list, tuple)):
+            if len(imgs) == 0:
+                return [], []
             if len(imgs) == 1:
                 imgs = np.expand_dims(imgs[0], 0)
             else:
                 imgs = np.stack(imgs)
-        elif len(imgs.shape) == 3:
-            imgs = np.expand_dims(imgs, 0)
+        elif isinstance(imgs, np.ndarray):
+            if len(imgs.shape) == 3:
+                imgs = np.expand_dims(imgs, 0)
+            elif len(imgs.shape) != 4:
+                raise ValueError(f"Invalid input shape: {imgs.shape}. Expected 3D or 4D array.")
+        else:
+            raise ValueError(f"Invalid input type: {type(imgs)}. Expected numpy array, list, or tuple.")
 
-        input_height = imgs[0].shape[0]
-        input_width = imgs[0].shape[1]
+        if imgs.shape[0] == 0:
+            return [], []
+
+        input_height = int(imgs[0].shape[0])
+        input_width = int(imgs[0].shape[1])
+        
         blob = self._preprocess(imgs)
         net_outs = self._forward(blob)
 
@@ -262,10 +302,15 @@ class SCRFD:
             height = input_height // stride
             width = input_width // stride
 
+            # Generate anchor centers using meshgrid
             anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
+            # Convert grid coordinates to actual pixel coordinates
             anchor_centers = (anchor_centers * stride).reshape((-1, 2))
+            
             if num_anchors > 1:
+                # Replicate anchor centers for multiple anchors per location
                 anchor_centers = np.stack([anchor_centers] * num_anchors, axis=1).reshape((-1, 2))
+            
             centers.append(anchor_centers)
         return centers
 
@@ -275,7 +320,7 @@ class SCRFD:
         Normalize image on CPU if backend can't provide CUDA stream,
         otherwise preprocess image on GPU using CuPy
 
-        :param img: Raw image as np.ndarray with HWC shape
+        :param img: Raw image as np.ndarray with NCHW or HWC shape
         :return: Preprocessed image or None if image was processed on device
         """
 
@@ -284,7 +329,12 @@ class SCRFD:
             self.infer_shape = _normalize_on_device(
                 img, self.stream, self.input_ptr)
         else:
-            input_size = tuple(img[0].shape[0:2][::-1])
+            # Handle different input formats robustly
+            if len(img.shape) == 4:  # Batch of images
+                input_size = tuple(img[0].shape[0:2][::-1])
+            else:  # Single image
+                input_size = tuple(img.shape[0:2][::-1])
+            
             blob = cv2.dnn.blobFromImages(
                 img, 1.0 / 128, input_size, (127.5, 127.5, 127.5), swapRB=True)
         return blob
@@ -338,8 +388,6 @@ class SCRFD:
         :return: filtered bboxes, keypoints and scores
         """
 
-
-
         batch_size = self.infer_shape[0]
         bboxes_by_img = []
         kpss_by_img = []
@@ -348,17 +396,37 @@ class SCRFD:
         for n_img in range(batch_size):
             offset = 0
             for idx, stride in enumerate(self._feat_stride_fpn):
+                # Handle different tensor formats robustly
                 score_blob = net_outs[idx][n_img]
                 bbox_blob = net_outs[idx + self.fmc][n_img]
                 kpss_blob = net_outs[idx + self.fmc * 2][n_img]
+                
+                # Ensure proper shape handling for different tensor formats
+                if len(score_blob.shape) == 1:
+                    score_blob = score_blob.reshape(-1, 1)
+                if len(bbox_blob.shape) == 1:
+                    bbox_blob = bbox_blob.reshape(-1, 4)
+                if len(kpss_blob.shape) == 1:
+                    kpss_blob = kpss_blob.reshape(-1, 10)
+                
                 stride_anchors = anchor_centers[idx]
-                self.score_list, self.bbox_list, self.kpss_list, total = generate_proposals(score_blob, bbox_blob,
-                                                                                            kpss_blob, stride,
-                                                                                            stride_anchors, threshold,
-                                                                                            self.score_list,
-                                                                                            self.bbox_list,
-                                                                                            self.kpss_list, offset)
-                offset = total
+                
+                # Ensure anchors and blobs have matching lengths
+                min_len = min(len(stride_anchors), len(score_blob), len(bbox_blob), len(kpss_blob))
+                if min_len > 0:
+                    self.score_list, self.bbox_list, self.kpss_list, total = generate_proposals(
+                        score_blob[:min_len], 
+                        bbox_blob[:min_len],
+                        kpss_blob[:min_len], 
+                        stride,
+                        stride_anchors[:min_len], 
+                        threshold,
+                        self.score_list,
+                        self.bbox_list,
+                        self.kpss_list, 
+                        offset
+                    )
+                    offset = total
 
             bboxes_by_img.append(np.copy(self.bbox_list[:offset]))
             kpss_by_img.append(np.copy(self.kpss_list[:offset]))
