@@ -147,8 +147,8 @@ dmypy.json
 .pyre/
 
 # IDE files
-# .vscode/
-# .idea/
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
@@ -188,3 +188,14 @@ temp/
 jetson_results/
 test_images/
 crops/
+
+# Logs and temporary files
+*.out
+
+# Test outputs and results
+*results*/
+*test_results*/
+*monitor*.log
+
+# Local development
+.env.local
